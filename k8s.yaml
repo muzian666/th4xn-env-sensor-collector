@@ -1,0 +1,79 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sensor-collector
+  labels:
+    app: sensor-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sensor-collector
+  template:
+    metadata:
+      labels:
+        app: sensor-collector
+    spec:
+      containers:
+        - name: collector
+          image: <your-registry>:5000/sensor-collector:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 6666
+              protocol: UDP
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DB_PATH
+              value: "/data/sensor_data.db"
+            - name: LISTEN_PORT
+              value: "6666"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: TZ
+              value: "Asia/Shanghai"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import sqlite3; sqlite3.connect('/data/sensor_data.db')"
+            initialDelaySeconds: 5
+            periodSeconds: 60
+      volumes:
+        - name: data
+          hostPath:
+            path: /data/sensor-collector
+            type: DirectoryOrCreate
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sensor-collector
+  labels:
+    app: sensor-collector
+spec:
+  type: LoadBalancer
+  selector:
+    app: sensor-collector
+  ports:
+    - name: udp-sensor
+      port: 6666
+      targetPort: 6666
+      protocol: UDP
+    - name: http-dashboard
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
