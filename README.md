@@ -83,7 +83,23 @@ Key finding: the sensor expects a response after each packet. Without one, it ma
 
 Response templates are obtained by capturing replies from the original server `120.79.239.247` and configured in `collector.py`.
 
-## Implementation
+## Quick Start
+
+To use this project with your own TH4xN sensors, you need to obtain the response templates that the sensor expects from the cloud server. Here's how:
+
+1. **Capture the original server's response.** Before setting up DNAT, let the sensor communicate with `120.79.239.247` normally. Run `test_listen.py` on a machine that can see the traffic (e.g. port mirror on the sensor's switch port):
+   ```bash
+   python test_listen.py
+   ```
+   You'll see packets the sensor sends **and** — if you can also capture the replies — the responses from `120.79.239.247`.
+
+2. **Extract response hex.** You need two response packets:
+   - One for `cmd=0x01` (data report ACK)
+   - One for `cmd=0x02` (heartbeat ACK)
+
+3. **Update `collector.py`.** Replace the `XXXXXXXXXXXX` placeholders in `RESPONSE_CMD_01` and `RESPONSE_CMD_02` with the actual hex payloads from step 2. The device ID portion (bytes 2-6) is automatically patched at runtime, so only the surrounding bytes matter.
+
+4. **Configure DNAT** as described above, build, deploy, and you're done.
 
 ### Components
 
@@ -219,6 +235,24 @@ Body (sensor data):
 响应模板通过抓取原始服务器 `120.79.239.247` 的回复获得，在 `collector.py` 中配置。
 
 ## 实现
+
+### 快速上手
+
+要让这个项目适配你自己的 TH4xN 传感器，你需要获取传感器期望的响应模板。步骤如下：
+
+1. **抓取原始服务器的响应。** 在配置 DNAT 之前，让传感器正常与 `120.79.239.247` 通信。在能嗅探到流量的机器上（比如在传感器所在的交换机端口做端口镜像）运行 `test_listen.py`：
+   ```bash
+   python test_listen.py
+   ```
+   你会看到传感器发出的数据包，如果同时能抓到 `120.79.239.247` 的回复，那就是我们需要的响应模板。
+
+2. **提取响应的 hex 数据。** 需要两种响应包：
+   - `cmd=0x01` 的响应（数据上报 ACK）
+   - `cmd=0x02` 的响应（心跳 ACK）
+
+3. **修改 `collector.py`。** 将 `RESPONSE_CMD_01` 和 `RESPONSE_CMD_02` 中的 `XXXXXXXXXXXX` 占位符替换为第 2 步抓到的实际 hex 数据。其中设备 ID 部分（bytes 2-6）会在运行时自动替换为当前传感器的设备 ID，所以只需要保证其他部分正确即可。
+
+4. **配置 DNAT**（参见上文），构建镜像、部署即可。
 
 ### 核心组件
 

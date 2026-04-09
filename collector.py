@@ -31,8 +31,10 @@ DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).parent / "sensor_dat
 LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
 
 # Response templates captured from the sensor's default cloud server (120.79.239.247:6666)
-# Replace the hex payloads below with ones captured from your own sensors.
-# The device ID portion (bytes 2-6) is patched at runtime by build_response().
+# Replace the XXXXXXXXXXXX placeholders with your captured response hex.
+# The device ID portion (bytes 2-6) is patched at runtime by build_response(),
+# so only the surrounding bytes need to match your captured packet.
+# See README "Quick Start" for instructions on capturing these.
 RESPONSE_CMD_01 = bytes.fromhex(
     "7ec0XXXXXXXXXXXX010001000" "01b00001a040810"
     "291f0001000100040001" "5e00000001032000640"
