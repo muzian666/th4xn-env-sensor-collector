@@ -1,0 +1,11 @@
+{
+    "_comment": "Response templates captured from the sensor's cloud server (120.79.239.247:6666).",
+    "_comment_2": "Each device needs its OWN templates — sharing templates between devices can cause sensor malfunction.",
+    "_comment_3": "See README 'Quick Start' for instructions on how to capture these.",
+
+    "XXXXXXXXXXXX": {
+        "_comment": "Replace XXXXXXXXXXXX with your actual device ID (5 bytes hex, uppercase).",
+        "cmd_01": "7ec0XXXXXXXXXXXX01000100001b00001a040810291f00010001000400015e0000000103200064000198a90d",
+        "cmd_02": "7ec0XXXXXXXXXXXX0200010000000bf00d"
+    }
+}

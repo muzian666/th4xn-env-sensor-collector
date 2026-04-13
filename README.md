@@ -81,30 +81,92 @@ The sensor sends two types of commands:
 
 Key finding: the sensor expects a response after each packet. Without one, it may retransmit or behave unexpectedly. The collector therefore mimics the original cloud server's response to keep the sensor happy.
 
-Response templates are obtained by capturing replies from the original server `120.79.239.247` and configured in `collector.py`.
+### Known Issue: Humidity Sensor Lockup
+
+During testing, a critical bug was discovered: **sharing response templates between different sensors causes sensor malfunction.**
+
+Symptoms:
+1. A second sensor's humidity reading suddenly locked at 80.1% and stopped changing
+2. The body data showed a `04` status byte (normal is `00`), indicating the sensor entered an error state
+3. Root cause: the CMD=01 response packet contains device-specific parameters at bytes 24-25. Sending wrong parameters to a different sensor causes its humidity probe to enter an error mode
+
+**Solution: each sensor must use its own response template.**
+
+### CMD=01 Response Structure (43 bytes)
+
+```
+Offset  Content               Description
+0       0x7E                  Frame start
+1       0xC0                  Device type
+2-6     <device_id>           Device ID (5 bytes, patched at runtime)
+7       0x01                  Command number
+8-9     fixed                 Sequence + data length
+10-15   fixed                 Protocol parameters
+16      <month>               Month (dynamically updated)
+17      <day>                 Day (dynamically updated)
+18      <hour>                Hour (dynamically updated)
+19      <minute>              Minute (dynamically updated)
+20      <second>              Second (dynamically updated)
+21-23   fixed                 Protocol parameters
+24-25   <device params>       **Device-specific**, affects sensor behavior
+26-38   fixed                 Protocol parameters
+39-40   <checksum>            Checksum
+42      0x0D                  Frame end
+```
+
+The collector automatically patches bytes 2-6 (device ID) and 16-20 (timestamp) at runtime. Bytes 24-25 **must** come from the actual device's captured response.
 
 ## Quick Start
 
-To use this project with your own TH4xN sensors, you need to obtain the response templates that the sensor expects from the cloud server. Here's how:
+To use this project with your own TH4xN sensors, you need to obtain per-device response templates.
 
-1. **Capture the original server's response.** Before setting up DNAT, let the sensor communicate with `120.79.239.247` normally. Run `test_listen.py` on a machine that can see the traffic (e.g. port mirror on the sensor's switch port):
-   ```bash
-   python test_listen.py
-   ```
-   You'll see packets the sensor sends **and** — if you can also capture the replies — the responses from `120.79.239.247`.
+### Step 1: Capture Response Packets
 
-2. **Extract response hex.** You need two response packets:
-   - One for `cmd=0x01` (data report ACK)
-   - One for `cmd=0x02` (heartbeat ACK)
+Before setting up DNAT, let the sensor communicate with `120.79.239.247` normally. Capture the bidirectional traffic:
 
-3. **Update `collector.py`.** Replace the `XXXXXXXXXXXX` placeholders in `RESPONSE_CMD_01` and `RESPONSE_CMD_02` with the actual hex payloads from step 2. The device ID portion (bytes 2-6) is automatically patched at runtime, so only the surrounding bytes matter.
+**Option A — FortiGate sniffer** (recommended, sees both directions):
+```bash
+diagnose sniffer packet any 'host <sensor_ip> and udp port 6666' 6 0 l
+```
 
-4. **Configure DNAT** as described above, build, deploy, and you're done.
+**Option B — Port mirror + test_listen.py**:
+Mirror the sensor's switch port to a machine running:
+```bash
+python test_listen.py
+```
+
+### Step 2: Extract Response Hex
+
+From the capture, identify the **server → sensor** packets (responses from `120.79.239.247`). You need two per device:
+- CMD=01 response (data report ACK)
+- CMD=02 response (heartbeat ACK)
+
+### Step 3: Configure Templates
+
+Edit `response_templates.json` and add an entry for each device:
+
+```json
+{
+    "DEVICE_ID_UPPERCASE": {
+        "cmd_01": "<full hex of CMD=01 response>",
+        "cmd_02": "<full hex of CMD=02 response>"
+    }
+}
+```
+
+The device ID portion (bytes 2-6) and timestamp (bytes 16-20) are automatically updated at runtime. Only bytes 24-25 and other fixed fields must match the captured packet exactly.
+
+### Step 4: Deploy
+
+Configure DNAT, build the image, and deploy.
+
+## Implementation
 
 ### Components
 
 - **collector.py** — UDP listener + protocol parser + FastAPI web server
 - **dashboard.html** — Real-time temperature/humidity dashboard frontend
+- **response_templates.json** — Per-device response templates (edit this for your sensors)
 - **Dockerfile** — Container image
 - **k8s.yaml** — Kubernetes deployment manifest
 - **test_listen.py** — Simple UDP listener for debugging/packet capture
@@ -161,6 +223,7 @@ Access the dashboard on the collector's **TCP 8080** port.
 | `LISTEN_PORT` | `6666` | UDP listen port |
 | `HTTP_PORT` | `8080` | Web server port |
 | `DB_PATH` | `/data/sensor_data.db` | SQLite database path |
+| `TEMPLATES_PATH` | `response_templates.json` | Per-device response templates file |
 | `LOG_LEVEL` | `INFO` | Log level |
 | `TZ` | `Asia/Shanghai` | Timezone |
 
@@ -232,32 +295,92 @@ Body (sensor data):
 
 关键发现：传感器发送数据后期望收到服务器回复，如果不回复，传感器可能会反复重传或行为异常。因此 collector 需要模拟原始云服务器的响应包来"安抚"传感器。
 
-响应模板通过抓取原始服务器 `120.79.239.247` 的回复获得，在 `collector.py` 中配置。
+### 已知问题：湿度传感器锁死
+
+测试中发现了一个严重 bug：**不同传感器之间共用响应模板会导致传感器故障。**
+
+症状：
+1. 第二台传感器的湿度读数突然锁定在 80.1% 不再变化
+2. body 数据出现 `04` 状态字节（正常应为 `00`），传感器进入异常状态
+3. 根本原因：CMD=01 回复包的 24-25 字节包含设备相关参数，不同传感器参数不同。发送错误参数导致湿度探头进入错误模式
+
+**解决方案：每台传感器必须使用独立的回复模板。**
+
+### CMD=01 回复包结构（43 字节）
+
+```
+位置  内容                     说明
+0     0x7E                    帧起始
+1     0xC0                    设备类型
+2-6   <device_id>             设备 ID（5 字节，运行时自动替换）
+7     0x01                    命令号
+8-9   固定                    序列号 + 数据长度
+10-15 固定                    协议参数
+16    <month>                 月份（运行时动态更新）
+17    <day>                   日期（运行时动态更新）
+18    <hour>                  小时（运行时动态更新）
+19    <minute>                分钟（运行时动态更新）
+20    <second>                秒（运行时动态更新）
+21-23 固定                    协议参数
+24-25 <设备参数>              **因设备而异**，影响传感器行为
+26-38 固定                    协议参数
+39-40 <checksum>              校验和
+42    0x0D                    帧结束
+```
+
+collector 会自动更新 2-6（设备 ID）和 16-20（时间戳），但 24-25 **必须**来自该设备的实际抓包数据。
 
 ## 实现
 
 ### 快速上手
 
-要让这个项目适配你自己的 TH4xN 传感器，你需要获取传感器期望的响应模板。步骤如下：
+要让这个项目适配你自己的 TH4xN 传感器，你需要为每台设备获取独立的响应模板。
 
-1. **抓取原始服务器的响应。** 在配置 DNAT 之前，让传感器正常与 `120.79.239.247` 通信。在能嗅探到流量的机器上（比如在传感器所在的交换机端口做端口镜像）运行 `test_listen.py`：
-   ```bash
-   python test_listen.py
-   ```
-   你会看到传感器发出的数据包，如果同时能抓到 `120.79.239.247` 的回复，那就是我们需要的响应模板。
+#### 第 1 步：抓取响应包
 
-2. **提取响应的 hex 数据。** 需要两种响应包：
-   - `cmd=0x01` 的响应（数据上报 ACK）
-   - `cmd=0x02` 的响应（心跳 ACK）
+在配置 DNAT 之前，让传感器正常与 `120.79.239.247` 通信。抓取双向流量：
 
-3. **修改 `collector.py`。** 将 `RESPONSE_CMD_01` 和 `RESPONSE_CMD_02` 中的 `XXXXXXXXXXXX` 占位符替换为第 2 步抓到的实际 hex 数据。其中设备 ID 部分（bytes 2-6）会在运行时自动替换为当前传感器的设备 ID，所以只需要保证其他部分正确即可。
+**方式 A — FortiGate sniffer**（推荐，能看到双向数据）：
+```bash
+diagnose sniffer packet any 'host <sensor_ip> and udp port 6666' 6 0 l
+```
 
-4. **配置 DNAT**（参见上文），构建镜像、部署即可。
+**方式 B — 端口镜像 + test_listen.py**：
+将传感器所在的交换机端口镜像到一台机器上运行：
+```bash
+python test_listen.py
+```
+
+#### 第 2 步：提取响应 Hex
+
+从抓包数据中找出**服务器→传感器**方向的数据包（即 `120.79.239.247` 的回复）。每台设备需要两个：
+- CMD=01 响应（数据上报 ACK）
+- CMD=02 响应（心跳 ACK）
+
+#### 第 3 步：配置模板
+
+编辑 `response_templates.json`，为每台设备添加条目：
+
+```json
+{
+    "设备ID大写": {
+        "cmd_01": "<CMD=01 回复的完整 hex>",
+        "cmd_02": "<CMD=02 回复的完整 hex>"
+    }
+}
+```
+
+设备 ID（bytes 2-6）和时间戳（bytes 16-20）会在运行时自动更新，只有 24-25 等固定字段必须与抓包完全一致。
+
+#### 第 4 步：部署
+
+配置 DNAT（参见上文），构建镜像并部署。
 
 ### 核心组件
 
 - **collector.py** — UDP 监听 + 协议解析 + FastAPI Web 服务
 - **dashboard.html** — 实时温湿度仪表盘前端
+- **response_templates.json** — 每台传感器的独立响应模板（需要编辑此文件）
 - **Dockerfile** — 容器化部署
 - **k8s.yaml** — Kubernetes 部署配置
 - **test_listen.py** — 简单的 UDP 抓包工具，用于调试
@@ -314,5 +437,6 @@ SQLite 数据库通过 hostPath 挂载在 K8s 节点的 `/data/sensor-collector/
 | `LISTEN_PORT` | `6666` | UDP 监听端口 |
 | `HTTP_PORT` | `8080` | Web 服务端口 |
 | `DB_PATH` | `/data/sensor_data.db` | SQLite 数据库路径 |
+| `TEMPLATES_PATH` | `response_templates.json` | 每台设备的响应模板文件 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
 | `TZ` | `Asia/Shanghai` | 时区 |

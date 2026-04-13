@@ -18,6 +18,7 @@ import logging
 import signal
 import sys
 import time
+import json
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -29,20 +30,38 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "6666"))
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "8080"))
 DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).parent / "sensor_data.db")))
 LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+TEMPLATES_PATH = Path(os.environ.get("TEMPLATES_PATH", str(Path(__file__).parent / "response_templates.json")))
 
-# Response templates captured from the sensor's default cloud server (120.79.239.247:6666)
-# Replace the XXXXXXXXXXXX placeholders with your captured response hex.
-# The device ID portion (bytes 2-6) is patched at runtime by build_response(),
-# so only the surrounding bytes need to match your captured packet.
-# See README "Quick Start" for instructions on capturing these.
-RESPONSE_CMD_01 = bytes.fromhex(
-    "7ec0XXXXXXXXXXXX010001000" "01b00001a040810"
-    "291f0001000100040001" "5e00000001032000640"
-    "00198a90d"
-)
-RESPONSE_CMD_02 = bytes.fromhex(
-    "7ec0XXXXXXXXXXXX0200010000000bf00d"
-)
+# Per-device response templates loaded from response_templates.json at startup.
+# Key: device_id (uppercase hex string), Value: {"cmd_01": hex, "cmd_02": hex}
+RESPONSE_TEMPLATES: dict[str, dict[str, bytes]] = {}
+
+
+def load_response_templates(path: Path) -> dict[str, dict[str, bytes]]:
+    """Load per-device response templates from a JSON file.
+
+    JSON format:
+    {
+        "DEVICEID": {
+            "cmd_01": "<hex string of CMD=01 response>",
+            "cmd_02": "<hex string of CMD=02 response>"
+        }
+    }
+    Keys starting with '_' are treated as comments and skipped.
+    """
+    if not path.exists():
+        return {}
+    with open(path, "r") as f:
+        raw = json.load(f)
+    templates = {}
+    for device_id, cmds in raw.items():
+        if device_id.startswith("_"):
+            continue
+        templates[device_id.upper()] = {
+            "cmd_01": bytes.fromhex(cmds["cmd_01"]),
+            "cmd_02": bytes.fromhex(cmds["cmd_02"]),
+        }
+    return templates
 
 # Global DB lock for thread safety
 _db_lock = threading.Lock()
@@ -160,24 +179,37 @@ def _parse_sensor_data(body: bytes, cmd: int) -> dict:
 
 # ── Response Builder ───────────────────────────────────────────
 def build_response(parsed: dict) -> bytes | None:
-    """Build a response packet to keep the sensor happy."""
-    device_id_bytes = bytes.fromhex(parsed["device_id"])
+    """Build a response packet to keep the sensor happy.
+
+    Uses per-device templates loaded from response_templates.json.
+    For CMD=01 responses, dynamically updates the timestamp at bytes 16-20.
+    """
+    dev = parsed["device_id"]
     cmd = parsed["cmd"]
+    tmpl = RESPONSE_TEMPLATES.get(dev)
+    if tmpl is None:
+        return None
 
-    if cmd == 0x02:
-        # Heartbeat ACK
-        resp = bytearray(RESPONSE_CMD_02)
-        # Patch device ID (bytes 2-6)
-        resp[2:7] = device_id_bytes
-        return bytes(resp)
+    cmd_key = "cmd_02" if cmd == 0x02 else "cmd_01"
+    raw = tmpl.get(cmd_key)
+    if raw is None:
+        return None
 
-    if cmd == 0x01:
-        # Data report ACK
-        resp = bytearray(RESPONSE_CMD_01)
-        resp[2:7] = device_id_bytes
-        return bytes(resp)
+    resp = bytearray(raw)
 
-    return None
+    # Patch device ID (bytes 2-6)
+    resp[2:7] = bytes.fromhex(dev)
+
+    # For CMD=01, update timestamp at bytes 16-20 (month, day, hour, minute, second)
+    if cmd == 0x01 and len(resp) >= 21:
+        now = datetime.now()
+        resp[16] = now.month
+        resp[17] = now.day
+        resp[18] = now.hour
+        resp[19] = now.minute
+        resp[20] = now.second
+
+    return bytes(resp)
 
 
 # ── FastAPI Web Server ─────────────────────────────────────────
@@ -344,6 +376,12 @@ def main():
 
     conn = init_db(DB_PATH)
     log.info(f"Database: {DB_PATH}")
+
+    global RESPONSE_TEMPLATES
+    RESPONSE_TEMPLATES = load_response_templates(TEMPLATES_PATH)
+    log.info(f"Loaded response templates for {len(RESPONSE_TEMPLATES)} device(s) from {TEMPLATES_PATH}")
+    for dev in RESPONSE_TEMPLATES:
+        log.info(f"  Device {dev}: cmd_01={len(RESPONSE_TEMPLATES[dev]['cmd_01'])}B, cmd_02={len(RESPONSE_TEMPLATES[dev]['cmd_02'])}B")
 
     # Start web server in background thread
     web_thread = threading.Thread(target=run_web_server, args=(conn,), daemon=True)
